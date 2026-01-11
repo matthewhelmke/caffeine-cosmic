@@ -1,14 +1,13 @@
 [Desktop Entry]
-Name={{ project-name | title_case }}
-Comment={{ description }}
+Name=Caffeine
+Comment=Prevent system sleep and screen lock
 Type=Application
-Icon={{ appid }}
-Exec={{ project-name }} %F
+Exec=cosmic-caffeine
 Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;caffeine;sleep;power;inhibit;
+Icon=com.github.cosmic-caffeine
 StartupNotify=true
-Categories=COSMIC
-Keywords=COSMIC
 NoDisplay=true
 X-CosmicApplet=true
 X-CosmicHoverPopup=Auto
-MimeType=
