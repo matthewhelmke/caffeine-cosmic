@@ -994,8 +994,10 @@ dependencies = [
  "i18n-embed-fl",
  "libcosmic",
  "rust-embed",
+ "serde",
  "tokio",
  "tracing",
+ "zbus 5.13.0",
 ]
 
 [[package]]

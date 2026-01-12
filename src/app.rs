@@ -1,18 +1,22 @@
-use cosmic::iced::widget::MouseArea;
+use cosmic::iced::futures::{stream, StreamExt};
 use cosmic::iced::{window::Id, Color, Length, Rectangle, Subscription};
 use cosmic::prelude::*;
 use cosmic::surface::action::{app_popup, destroy_popup};
 use cosmic::theme;
 use cosmic::widget;
+use cosmic::widget::MouseArea;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::backend::CaffeineBackend;
+use crate::service::{CaffeineManagerProxy, CaffeineService, DBUS_NAME, DBUS_PATH};
+use crate::state::{CaffeineState, TimerSelection};
 
 const ACTIVE_COLOR: Color = Color::from_rgb(0.698, 0.133, 0.133);
+
 const SYSTEM_ICON_PATH: &str =
     "/usr/share/icons/hicolor/scalable/apps/oussama-berchi-caffeine-cosmic.svg";
 
@@ -33,58 +37,13 @@ fn get_icon_path() -> PathBuf {
 static ICON_HANDLE: LazyLock<widget::icon::Handle> =
     LazyLock::new(|| widget::icon::from_path(get_icon_path()).symbolic(true));
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TimerSelection {
-    #[default]
-    Infinity,
-    OneHour,
-    TwoHours,
-    Manual,
-}
-
-impl TimerSelection {
-    fn label(&self) -> &'static str {
-        match self {
-            TimerSelection::Infinity => "Infinity",
-            TimerSelection::OneHour => "1 Hour",
-            TimerSelection::TwoHours => "2 Hours",
-            TimerSelection::Manual => "Manual",
-        }
-    }
-
-    fn duration_secs(&self, manual_mins: Option<u64>) -> Option<u64> {
-        match self {
-            TimerSelection::Infinity => None,
-            TimerSelection::OneHour => Some(3600),
-            TimerSelection::TwoHours => Some(7200),
-            TimerSelection::Manual => manual_mins.map(|m| m * 60),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CaffeineState {
-    #[default]
-    Inactive,
-    Active {
-        selection: TimerSelection,
-        remaining_secs: Option<u64>,
-    },
-}
-
-impl CaffeineState {
-    fn is_active(&self) -> bool {
-        matches!(self, CaffeineState::Active { .. })
-    }
-}
-
 pub struct AppModel {
     core: cosmic::Core,
     selected_timer: TimerSelection,
     manual_input: String,
     caffeine_state: CaffeineState,
     popup: Option<Id>,
-    backend: CaffeineBackend,
+    proxy: Option<CaffeineManagerProxy<'static>>,
     active_icon_style: cosmic::theme::Svg,
     is_hovered: bool,
 }
@@ -93,14 +52,15 @@ pub struct AppModel {
 pub enum Message {
     SelectTimer(TimerSelection),
     ManualInputChanged(String),
-    StartCaffeine,
-    StopCaffeine,
+    ToggleCaffeine,
+    SetState(bool),
     TimerTick,
-    TimerExpired,
     PopupClosed(Id),
     TogglePopup(Rectangle),
     Surface(cosmic::surface::Action),
     Hover(bool),
+    DBusReady(Option<CaffeineManagerProxy<'static>>),
+    StateChanged(CaffeineState),
 }
 
 impl cosmic::Application for AppModel {
@@ -133,13 +93,57 @@ impl cosmic::Application for AppModel {
             core,
             selected_timer: TimerSelection::default(),
             manual_input: "30".to_string(),
-            caffeine_state: CaffeineState::Inactive,
+            caffeine_state: CaffeineState::inactive(),
             popup: None,
-            backend: CaffeineBackend::new(),
+            proxy: None,
             active_icon_style: active_style,
             is_hovered: false,
         };
-        (app, Task::none())
+
+        let dbus_task = Task::perform(
+            async move {
+                let conn = match zbus::Connection::session().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to connect to session bus: {}", e);
+                        return None;
+                    }
+                };
+
+                match conn.request_name(DBUS_NAME).await {
+                    Ok(_) => {
+                        info!("Acquired D-Bus name: {}", DBUS_NAME);
+                        let backend = CaffeineBackend::new();
+                        let state = Arc::new(Mutex::new(CaffeineState::inactive()));
+                        let service = CaffeineService::new(backend, state);
+                        if let Err(e) = conn.object_server().at(DBUS_PATH, service).await {
+                            error!("Failed to serve object: {}", e);
+                        }
+                    }
+                    Err(_) => {
+                        info!("D-Bus name already taken, acting as client");
+                    }
+                }
+
+                match CaffeineManagerProxy::builder(&conn)
+                    .path(DBUS_PATH)
+                    .ok()?
+                    .destination(DBUS_NAME)
+                    .ok()?
+                    .build()
+                    .await
+                {
+                    Ok(proxy) => Some(proxy),
+                    Err(e) => {
+                        error!("Failed to create proxy: {}", e);
+                        None
+                    }
+                }
+            },
+            |proxy| cosmic::Action::App(Message::DBusReady(proxy)),
+        );
+
+        (app, dbus_task)
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Self::Message> {
@@ -208,11 +212,29 @@ impl cosmic::Application for AppModel {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
-        info!("Received Message: {:?}", message);
-
         match message {
+            Message::DBusReady(proxy) => {
+                if let Some(proxy) = proxy {
+                    info!("D-Bus proxy ready");
+                    self.proxy = Some(proxy.clone());
+
+                    // Initial state fetch
+                    return Task::perform(
+                        async move {
+                            match proxy.get_state().await {
+                                Ok(state) => Message::StateChanged(state),
+                                Err(e) => {
+                                    error!("Failed to get initial state: {}", e);
+                                    Message::Hover(false)
+                                }
+                            }
+                        },
+                        |m| cosmic::Action::App(m),
+                    );
+                }
+            }
+
             Message::SelectTimer(selection) => {
-                info!("Timer selection changed to: {:?}", selection);
                 self.selected_timer = selection;
             }
 
@@ -222,92 +244,57 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::StartCaffeine => {
-                info!(
-                    "Starting caffeine with selection: {:?}",
-                    self.selected_timer
-                );
-                let selection = self.selected_timer;
-
-                let manual_mins = if selection == TimerSelection::Manual {
-                    match self.manual_input.parse::<u64>() {
-                        Ok(m) if m > 0 => Some(m),
-                        _ => {
-                            warn!("Invalid manual input, defaulting to 30 mins");
-                            Some(30)
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                let duration_secs = selection.duration_secs(manual_mins);
-
-                self.caffeine_state = CaffeineState::Active {
-                    selection,
-                    remaining_secs: duration_secs,
-                };
-
-                let backend = self.backend.clone();
-                let reason = match selection {
-                    TimerSelection::Infinity => "User enabled infinity caffeine mode".to_string(),
-                    TimerSelection::OneHour => "User enabled 1-hour caffeine timer".to_string(),
-                    TimerSelection::TwoHours => "User enabled 2-hour caffeine timer".to_string(),
-                    TimerSelection::Manual => format!(
-                        "User enabled {}-minute caffeine timer",
-                        manual_mins.unwrap_or(30)
-                    ),
-                };
-
-                tokio::spawn(async move {
-                    if let Err(e) = backend.inhibit(&reason).await {
-                        error!("Failed to inhibit: {}", e);
-                    }
-                });
+            Message::ToggleCaffeine => {
+                // UI button pressed (Start or Stop)
+                let is_active = self.caffeine_state.is_active();
+                return Task::done(cosmic::Action::App(Message::SetState(!is_active)));
             }
 
-            Message::StopCaffeine => {
-                info!("Stopping caffeine");
-                self.caffeine_state = CaffeineState::Inactive;
+            Message::SetState(active) => {
+                if let Some(proxy) = &self.proxy {
+                    let proxy = proxy.clone();
+                    let selection = self.selected_timer;
+                    let manual_input = self.manual_input.clone();
 
-                let backend = self.backend.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = backend.uninhibit().await {
-                        error!("Failed to uninhibit: {}", e);
-                    }
-                });
+                    return Task::perform(
+                        async move {
+                            let (idx, mins) = match selection {
+                                TimerSelection::Infinity => (0, 0),
+                                TimerSelection::OneHour => (1, 0),
+                                TimerSelection::TwoHours => (2, 0),
+                                TimerSelection::Manual => {
+                                    (3, manual_input.parse::<u32>().unwrap_or(30))
+                                }
+                            };
+
+                            if let Err(e) = proxy.set_state(active, idx, mins).await {
+                                error!("Failed to set state via D-Bus: {}", e);
+                            }
+                            Message::Hover(false)
+                        },
+                        |m| cosmic::Action::App(m),
+                    );
+                } else {
+                    warn!("Proxy not ready, cannot toggle state");
+                }
+            }
+
+            Message::StateChanged(new_state) => {
+                info!("State synced from D-Bus: {:?}", new_state);
+                self.caffeine_state = new_state;
             }
 
             Message::TimerTick => {
-                if let CaffeineState::Active {
-                    remaining_secs: Some(secs),
-                    ..
-                } = &mut self.caffeine_state
-                {
-                    if *secs > 0 {
-                        *secs -= 1;
-                    }
-                    if *secs == 0 {
-                        info!("Timer expired, stopping caffeine");
-                        return Task::done(cosmic::Action::App(Message::TimerExpired));
+                // Check if the timer has expired
+                if let Some(remaining) = self.caffeine_state.remaining_secs() {
+                    if remaining == 0 && self.caffeine_state.is_active() {
+                         info!("Timer expired, disabling caffeine");
+                         return Task::done(cosmic::Action::App(Message::SetState(false)));
                     }
                 }
             }
 
-            Message::TimerExpired => {
-                info!("Timer expired message received");
-                self.caffeine_state = CaffeineState::Inactive;
-
-                let backend = self.backend.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = backend.uninhibit().await {
-                        error!("Failed to uninhibit: {}", e);
-                    }
-                });
-            }
-
             Message::PopupClosed(id) => {
-                info!("Popup closed: {:?}", id);
                 if self.popup.as_ref() == Some(&id) {
                     self.popup = None;
                 }
@@ -341,13 +328,10 @@ impl cosmic::Application for AppModel {
                     return Task::done(cosmic::Action::Cosmic(cosmic::app::Action::Surface(
                         action,
                     )));
-                } else {
-                    error!("Cannot open popup: Main window ID missing");
                 }
             }
 
             Message::Surface(action) => {
-                info!("Surface action received");
                 return Task::done(cosmic::Action::Cosmic(cosmic::app::Action::Surface(action)));
             }
 
@@ -359,13 +343,55 @@ impl cosmic::Application for AppModel {
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
-        match &self.caffeine_state {
-            CaffeineState::Active {
-                remaining_secs: Some(secs),
-                ..
-            } if *secs > 0 => timer_subscription(),
-            _ => Subscription::none(),
-        }
+        let timer = if self.caffeine_state.is_active() {
+            use cosmic::iced::futures::stream;
+            Subscription::run_with_id(
+                "caffeine-timer",
+                stream::unfold((), |()| async {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    Some((Message::TimerTick, ()))
+                }),
+            )
+        } else {
+            Subscription::none()
+        };
+
+        let dbus_signals = if let Some(proxy) = &self.proxy {
+            let proxy = proxy.clone();
+            Subscription::run_with_id(
+                "dbus-signals",
+                stream::once(async move {
+                    info!("Subscribing to state signals...");
+                    match proxy.inner().receive_signal("StateChanged").await {
+                        Ok(stream) => {
+                            info!("Successfully subscribed to state signals");
+                            stream.boxed()
+                        },
+                        Err(e) => {
+                            error!("Failed to subscribe to signals: {}", e);
+                            stream::pending().boxed()
+                        }
+                    }
+                })
+                .flatten()
+                .filter_map(|change: zbus::Message| async move {
+                   match change.body().deserialize::<CaffeineState>() {
+                       Ok(state) => {
+                           info!("Received signal: {:?}", state);
+                           Some(Message::StateChanged(state))
+                       },
+                       Err(e) => {
+                           error!("Failed to parse signal body: {}", e);
+                           None
+                       }
+                   }
+                }),
+            )
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch(vec![timer, dbus_signals])
     }
 
     fn style(&self) -> Option<cosmic::iced_runtime::Appearance> {
@@ -379,27 +405,25 @@ fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
 
     let header = widget::text::heading("Caffeine Mode");
 
-    let status_text = match &state.caffeine_state {
-        CaffeineState::Inactive => "Caffeine is off".to_string(),
-        CaffeineState::Active {
-            selection,
-            remaining_secs,
-        } => match remaining_secs {
-            Some(secs) => {
-                let mins = secs / 60;
-                let hours = mins / 60;
-                let mins = mins % 60;
-                if hours > 0 {
-                    format!("{} - {}h {}m remaining", selection.label(), hours, mins)
-                } else if mins > 0 {
-                    format!("{} - {}m remaining", selection.label(), mins)
-                } else {
-                    format!("{} - {}s remaining", selection.label(), secs)
-                }
+    let status_text = if !state.caffeine_state.is_active() {
+        "Caffeine is off".to_string()
+    } else {
+        let selection = state.caffeine_state.selection;
+        if let Some(secs) = state.caffeine_state.remaining_secs() {
+            let hours = secs / 3600;
+            let mins = (secs % 3600) / 60;
+            if hours > 0 {
+                format!("{} - {}h {}m remaining", selection.label(), hours, mins)
+            } else if mins > 0 {
+                format!("{} - {}m remaining", selection.label(), mins)
+            } else {
+                format!("{} - {}s remaining", selection.label(), secs)
             }
-            None => format!("{} mode active", selection.label()),
-        },
+        } else {
+            format!("{} mode active", selection.label())
+        }
     };
+
     let status_indicator = widget::text::caption(status_text);
 
     let mut options = widget::column()
@@ -452,11 +476,11 @@ fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
 
     let action_button = if is_active {
         widget::button::destructive("Stop Caffeine")
-            .on_press(Message::StopCaffeine)
+            .on_press(Message::ToggleCaffeine)
             .width(Length::Fill)
     } else {
         widget::button::suggested("Start Caffeine")
-            .on_press(Message::StartCaffeine)
+            .on_press(Message::ToggleCaffeine)
             .width(Length::Fill)
     };
 
@@ -471,16 +495,4 @@ fn build_popup_content(state: &AppModel) -> Element<'_, Message> {
         .padding([spacing.space_s, spacing.space_m]);
 
     Element::from(state.core.applet.popup_container(content))
-}
-
-fn timer_subscription() -> Subscription<Message> {
-    use cosmic::iced::futures::stream;
-
-    Subscription::run_with_id(
-        "caffeine-timer",
-        stream::unfold((), |()| async {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            Some((Message::TimerTick, ()))
-        }),
-    )
 }
