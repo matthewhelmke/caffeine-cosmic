@@ -1,5 +1,9 @@
 # Caffeine for COSMIC
 
+<p align="center">
+  <img src="assets/screenshots/banner.png" width="100%">
+</p>
+
 A native Rust applet for the COSMIC Desktop Environment that prevents your system from going to sleep. Perfect for presentations, watching videos, or any time you need your screen to stay awake.
 
 ## What Does It Do?
@@ -11,17 +15,7 @@ When activated, Caffeine prevents your computer from:
 
 The applet sits in your panel and shows a coffee cup icon. Click it to toggle caffeine mode on or off.
 
-## Gallery
 
-<p align="center">
-  <img src="assets/screenshots/screenshot_1.png" width="48%" style="margin-right: 2%;">
-  <img src="assets/screenshots/screenshot_2.png" width="48%">
-</p>
-<p align="center">
-  <img src="assets/screenshots/screenshot_3.png" width="31%" style="margin-right: 2%;">
-  <img src="assets/screenshots/screenshot_4.png" width="31%" style="margin-right: 2%;">
-  <img src="assets/screenshots/screenshot_5.png" width="31%">
-</p>
 
 ## Features
 
