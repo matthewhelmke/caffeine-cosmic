@@ -11,6 +11,18 @@ When activated, Caffeine prevents your computer from:
 
 The applet sits in your panel and shows a coffee cup icon. Click it to toggle caffeine mode on or off.
 
+## Gallery
+
+<p align="center">
+  <img src="assets/screenshots/screenshot_1.png" width="48%" style="margin-right: 2%;">
+  <img src="assets/screenshots/screenshot_2.png" width="48%">
+</p>
+<p align="center">
+  <img src="assets/screenshots/screenshot_3.png" width="31%" style="margin-right: 2%;">
+  <img src="assets/screenshots/screenshot_4.png" width="31%" style="margin-right: 2%;">
+  <img src="assets/screenshots/screenshot_5.png" width="31%">
+</p>
+
 ## Features
 
 - **Simple Toggle**: One click to keep your screen awake
@@ -86,107 +98,6 @@ just package
 
 # Install the generated .deb file
 sudo dpkg -i target/debian/cosmic-caffeine_*.deb
-```
-
-## After Installation
-
-1. **Restart your session**: Log out and log back in, OR restart the COSMIC panel
-2. **Add the applet to your panel**:
-   - Open **Settings**
-   - Go to **Desktop** > **Panel**
-   - Click **Add Applet**
-   - Find and select **Caffeine**
-3. **Click the coffee cup** to start using it!
-
-## Uninstallation
-
-### System-Wide Uninstall
-```bash
-cd caffeine-cosmic
-just uninstall
-```
-
-### User-Only Uninstall
-```bash
-cd caffeine-cosmic
-just uninstall-local
-```
-
-### If Installed via .deb
-```bash
-sudo apt remove cosmic-caffeine
-```
-
-## Usage Guide
-
-### Basic Usage
-
-1. **Click the coffee cup icon** in your panel
-2. A popup menu appears with timer options
-3. **Select your preferred duration**:
-   - **Infinity**: Stays active until you manually turn it off
-   - **1 Hour**: Automatically turns off after 1 hour
-   - **2 Hours**: Automatically turns off after 2 hours
-   - **Manual**: Enter your own duration in minutes
-4. **Click "Start Caffeine"** to activate
-5. The icon turns **red** to show caffeine is active
-6. **Click "Stop Caffeine"** or wait for the timer to turn it off
-
-### Icon Colors
-
-| Color | Meaning |
-|-------|---------|
-| White | Caffeine is OFF (normal power settings) |
-| Red | Caffeine is ON (screen will stay awake) |
-
-## Available Commands
-
-Run `just --list` to see all available commands:
-
-| Command | Description |
-|---------|-------------|
-| `just build` | Build the project in release mode |
-| `just install` | Install system-wide (requires sudo) |
-| `just install-local` | Install for current user only |
-| `just uninstall` | Remove system-wide installation |
-| `just uninstall-local` | Remove user installation |
-| `just package` | Create a .deb package |
-| `just run` | Run the applet for testing |
-| `just run-debug` | Run with debug logging |
-| `just clean` | Remove build artifacts |
-| `just test` | Run tests |
-| `just fmt` | Format code |
-| `just lint` | Run clippy linter |
-
-## Troubleshooting
-
-### The applet doesn't appear in the panel options
-
-- Make sure you've logged out and back in after installation
-- Try running `just run` from the terminal to see if there are any errors
-- Check that you're running COSMIC Desktop (not GNOME or another DE)
-
-### The icon doesn't show up correctly
-
-- Run: `sudo gtk-update-icon-cache -f -t /usr/share/icons/hicolor`
-- Log out and back in
-
-### Caffeine doesn't prevent sleep
-
-- Make sure you're running on COSMIC Desktop
-- The applet uses the XDG Desktop Portal for inhibiting sleep
-- Check if the portal is running: `systemctl --user status xdg-desktop-portal`
-
-### Error messages in terminal
-
-Run with debug logging to see detailed information:
-```bash
-# Clone the repository
-git clone https://github.com/Oussamaberchi/caffeine-cosmic.git
-cd caffeine-cosmic
-
-# Build and install (will ask for sudo password)
-just install
 ```
 
 ## After Installation
